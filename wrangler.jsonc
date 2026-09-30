@@ -1,0 +1,8 @@
+{
+  "name": "reconcile",
+  "main": "worker.js",
+  "compatibility_date": "2026-09-01",
+  "d1_databases": [
+    { "binding": "DB", "database_name": "reconcile-db", "database_id": "efd13229-14b1-4c1b-9f04-d34913aeff5d" }
+  ]
+}
