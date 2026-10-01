@@ -2083,11 +2083,11 @@ function render(){
     return '<div class="hourbar"><span class="n" title="฿'+fmt(amt)+'">'+(amt>=10000?(amt/1000).toFixed(amt>=100000?0:1)+'k':fmt(amt).split('.')[0])+'</span><div class="b" style="height:'+pct+'%"></div><span class="h">'+h+'น.</span></div>';
   }).join('');
   let dash='';
-  S.rows.forEach(r=>{
+  S.rows.slice(-300).forEach(r=>{
     const st=STATUS[r.status], t=r.time&&r.time!=='-'?r.time.slice(0,5):'-';
     dash+='<tr><td class="center">'+esc(r.date||'-')+'</td><td><span class="br-tag">'+esc(r.branch||'-')+'</span></td><td><b>'+esc(r.jst&&r.jst!=='-'?r.jst:'-')+'</b></td><td>'+esc(r.orderNo)+'</td><td class="center">'+t+'</td><td>'+esc(r.name||'-')+'</td><td>'+bankBadge(r.bank)+'</td><td class="num">฿'+fmt(r.status==='bad'?r.amount:r.orderAmount)+'</td><td class="center"><span class="status '+st.c+'">'+st.t+'</span></td></tr>';
   });
-  document.getElementById('txMeta').textContent=S.rows.length+' รายการ · เลื่อนในตารางเพื่อดูเพิ่ม';
+  document.getElementById('txMeta').textContent=S.rows.length>300?'แสดง 300 จาก '+S.rows.length+' รายการ · ดูครบในแท็บรายงานประจำวัน หรือดาวน์โหลด Excel':S.rows.length+' รายการ · เลื่อนในตารางเพื่อดูเพิ่ม';
   document.getElementById('dashTbody').innerHTML=dash||'<tr><td colspan="9" class="empty">ไม่มีรายการในช่วงเวลาที่เลือก</td></tr>';
 
   // daily report
@@ -2331,19 +2331,19 @@ function cardAutoMatch(b,d,manual){
   const tx=[]; d.rows.forEach(r=>{ if(r.status==='bad'||r.channel!=='card') return; const y=ymdOf(r.date); if(!y||covered(y)) return;
     tx.push({key:cardRowKey(r),y,t:String(r.time||''),v:r2(r.total),used:false}); });
   tx.sort((a,c)=>a.y-c.y||a.t.localeCompare(c.t));
-  const dayTot=new Map(); tx.forEach(x=>dayTot.set(x.y,r2((dayTot.get(x.y)||0)+x.v)));
+  const dayTot=new Map(), usedDay=new Set(); tx.forEach(x=>dayTot.set(x.y,r2((dayTot.get(x.y)||0)+x.v)));
   if(credits.length){
     const kw=credits.filter(c=>CARD_RE.test(c.desc||'')); res.keyword=kw.length>0;
     const pool=(kw.length?kw:credits).map(c=>({...c,ymd:ymdOf(c.date)})).filter(c=>c.ymd).sort((a,c)=>a.ymd-c.ymd||String(a.time).localeCompare(String(c.time)));
-    const ratios=[]; const ref=()=>{ if(ratios.length<2) return null; const s=ratios.slice().sort((a,c)=>a-c); return s[Math.floor(s.length/2)]; };
+    const ratios=[]; let refC=null, refN=-1; const ref=()=>{ if(ratios.length<2) return null; if(refN!==ratios.length){ const s=ratios.slice().sort((a,c)=>a-c); refC=s[Math.floor(s.length/2)]; refN=ratios.length; } return refC; };
     const okR=(ratio,strict)=>{ if(!strict) return ratio>=0.95&&ratio<=1.0005; const m=ref(); return m?Math.abs(ratio-m)<=0.006:(ratio>=0.965&&ratio<=0.995); };
-    const take=(c,group,how)=>{ group.forEach(x=>x.used=true); const s=r2(group.reduce((a,x)=>a+x.v,0)); ratios.push(c.amount/s);
+    const take=(c,group,how)=>{ group.forEach(x=>{ x.used=true; usedDay.add(x.y); }); const s=r2(group.reduce((a,x)=>a+x.v,0)); ratios.push(c.amount/s);
       const days=[...new Set(group.map(x=>x.y))], partial=days.filter(y=>r2(group.filter(x=>x.y===y).reduce((a,x)=>a+x.v,0))!==dayTot.get(y));
       res.matches.push({branch:b,from:days[0],to:days[days.length-1],days,partial,how,keys:group.map(x=>x.key),sales:s,credit:c,fee:r2(s-c.amount),auto:true}); };
     // รอบที่ 1: ทั้งวัน และวันติดกัน (แบบเดิม)  รอบที่ 2: ต่อเนื่องตามเวลา ตัดกลางวันได้  รอบที่ 3: หลายวันที่ไม่ติดกัน
     const tryDays=(c,strict)=>{
       const early=String(c.time||'')<'06:00'&&String(c.time||'')!=='';
-      const ds=[...new Set(tx.filter(x=>!x.used&&(early?x.y<c.ymd:x.y<=c.ymd)&&dayDiff(x.y,c.ymd)<=7).map(x=>x.y))].filter(y=>tx.every(x=>x.y!==y||!x.used));
+      const ds=[...new Set(tx.filter(x=>!x.used&&(early?x.y<c.ymd:x.y<=c.ymd)&&dayDiff(x.y,c.ymd)<=7).map(x=>x.y))].filter(y=>!usedDay.has(y));
       let best=null;
       for(let e=ds.length-1;e>=0;e--){ let s=0; for(let st=e;st>=0;st--){ s=r2(s+dayTot.get(ds[st])); const ratio=c.amount/s;
         if(okR(ratio,strict)){ const sc=Math.abs(ratio-(ref()||0.98))+dayDiff(ds[e],c.ymd)*0.002+(e-st)*0.003; if(!best||sc<best.sc) best={sc,ys:ds.slice(st,e+1)}; } } }
@@ -2356,7 +2356,7 @@ function cardAutoMatch(b,d,manual){
       return best?best.g:null; };
     const trySubset=c=>{
       const early=String(c.time||'')<'06:00'&&String(c.time||'')!=='';
-      const ds=[...new Set(tx.filter(x=>!x.used&&(early?x.y<c.ymd:x.y<=c.ymd)&&dayDiff(x.y,c.ymd)<=7).map(x=>x.y))].filter(y=>tx.every(x=>x.y!==y||!x.used)).slice(-10);
+      const ds=[...new Set(tx.filter(x=>!x.used&&(early?x.y<c.ymd:x.y<=c.ymd)&&dayDiff(x.y,c.ymd)<=7).map(x=>x.y))].filter(y=>!usedDay.has(y)).slice(-10);
       let best=null; for(let m=1;m<(1<<ds.length);m++){ let s=0; const ys=[]; ds.forEach((y,i)=>{ if(m&(1<<i)){ s+=dayTot.get(y); ys.push(y); } }); const ratio=c.amount/r2(s);
         if(okR(ratio,true)){ const sc=Math.abs(ratio-(ref()||0.98))+ys.length*0.001; if(!best||sc<best.sc) best={sc,ys}; } }
       return best?tx.filter(x=>best.ys.includes(x.y)):null; };
@@ -3643,6 +3643,11 @@ function linkPrevPos(rows){
 const SYNC={own:new Set(), smallBase:{}, reason:'', localSnap:null, pendingLocal:{}, db:null, status:'local', applying:false, lastJson:{}, meta:{}, versions:{}, small:{}, queue:Promise.resolve(), pending:0, lastBy:'', lastAt:''};
 const BKEY=b=>'b'+(BRANCHES.indexOf(b)+1), BFROM=k=>BRANCHES[+String(k).slice(1)-1];
 const CHUNK=60000;
+// บีบอัดข้อมูลสาขาก่อนส่ง (gzip → base64) ขนาดเล็กลงราว 5–8 เท่า โหลด/บันทึกเร็วขึ้น
+async function gzB64(str){ const cs=new CompressionStream('gzip'); const w=cs.writable.getWriter(); w.write(new TextEncoder().encode(str)); w.close();
+  const buf=new Uint8Array(await new Response(cs.readable).arrayBuffer()); let bin=''; for(let i=0;i<buf.length;i+=0x8000) bin+=String.fromCharCode.apply(null,buf.subarray(i,i+0x8000)); return btoa(bin); }
+async function gunzipB64(b64){ const bin=atob(b64), u=new Uint8Array(bin.length); for(let i=0;i<bin.length;i++) u[i]=bin.charCodeAt(i);
+  return await new Response(new Blob([u]).stream().pipeThrough(new DecompressionStream('gzip'))).text(); }
 function serializeBranch(b){
   const d=DATA[b]; if(!d) return null;
   if(d.preload) return 'PRELOAD';
@@ -3676,16 +3681,17 @@ async function pushBranch(b,json,base){ if(base===undefined) base=SYNC.versions[
     try{ const cur=await db.doc('branches/'+id).get(); const m=cur&&cur.exists?cur.data():null;
       if(m&&m.v&&m.v!==base&&!SYNC.own.has(m.v)){
         const ps=await Promise.all(Array.from({length:m.n},(_,i)=>db.doc('chunks/'+id+'-'+m.v+'-'+i).get()));
-        if(ps.every(x=>x&&x.exists)){ const remote=JSON.parse(ps.map(x=>x.data().p).join('')); const merged=mergeBranchData(remote,JSON.parse(json));
+        if(ps.every(x=>x&&x.exists)){ let rj=ps.map(x=>x.data().p).join(''); if(m.z) rj=await gunzipB64(rj); const remote=JSON.parse(rj); const merged=mergeBranchData(remote,JSON.parse(json));
           json=JSON.stringify(merged); DATA[b]={...merged, rows:tagRows(merged.rows,b), hidden:tagRows(merged.hidden||[],b)}; SYNC.lastJson[b]=json;
           SYNC.applying=true; try{ saveData(); }finally{ SYNC.applying=false; } setTimeout(()=>{ try{ render(); }catch(e){} },0); }
-        SYNC.meta[id]={v:m.v,n:m.n}; } }catch(e){ console.warn('merge',e); }
+        SYNC.meta[id]={v:m.v,n:m.n,z:m.z}; } }catch(e){ console.warn('merge',e); }
     SYNC.oldW=SYNC.meta[id];
     const v=Date.now().toString(36)+Math.random().toString(36).slice(2,5), parts=[];
-    for(let i=0;i<json.length;i+=CHUNK) parts.push(json.slice(i,i+CHUNK));
+    let body=json, z=0; if(typeof CompressionStream!=='undefined'){ try{ body=await gzB64(json); z=1; }catch(e){ body=json; z=0; } }
+    for(let i=0;i<body.length;i+=CHUNK) parts.push(body.slice(i,i+CHUNK));
     for(let i=0;i<parts.length;i++) await db.doc('chunks/'+id+'-'+v+'-'+i).set({p:parts[i]});
-    SYNC.versions[id]=v; SYNC.own.add(v); SYNC.meta[id]={v,n:parts.length};
-    await db.doc('branches/'+id).set({v,n:parts.length,at,by});
+    SYNC.versions[id]=v; SYNC.own.add(v); SYNC.meta[id]={v,n:parts.length,z};
+    await db.doc('branches/'+id).set(z?{v,n:parts.length,z,at,by}:{v,n:parts.length,at,by});
   }
   SYNC.lastBy=by; SYNC.lastAt=at;
   const ow=(json&&json!=='PRELOAD')?SYNC.oldW:old; SYNC.oldW=null;
@@ -3714,7 +3720,7 @@ function syncSmall(name,list){
 }
 async function applyRemoteBranch(id,meta){
   const b=BFROM(id); if(!b) return;
-  SYNC.meta[id]=meta&&meta.v?{v:meta.v,n:meta.n}:null;
+  SYNC.meta[id]=meta&&meta.v?{v:meta.v,n:meta.n,z:meta.z}:null;
   if(meta&&meta.by){ SYNC.lastBy=meta.by; SYNC.lastAt=meta.at||''; }
   const before=DATA[b];
   let changed=false;
@@ -3723,8 +3729,10 @@ async function applyRemoteBranch(id,meta){
   else if(meta.v!==SYNC.versions[id]){
     const parts=await Promise.all(Array.from({length:meta.n},(_,i)=>SYNC.db.doc('chunks/'+id+'-'+meta.v+'-'+i).get().catch(()=>null)));
     if(parts.some(p=>!p||!p.exists)){ setTimeout(()=>{ if(SYNC.meta[id]&&SYNC.meta[id].v===meta.v) applyRemoteBranch(id,meta); },2500); return; }
-    const json=parts.map(p=>p.data().p).join('');
+    let json=parts.map(p=>p.data().p).join('');
+    if(meta.z){ try{ json=await gunzipB64(json); }catch(e){ console.warn('gunzip',e); return; } }
     let obj; try{ obj=JSON.parse(json); }catch(e){ return; }
+    if(SYNC.meta[id]&&SYNC.meta[id].v!==meta.v) return;
     DATA[b]={...obj, rows:tagRows(obj.rows,b), hidden:tagRows(obj.hidden||[],b)};
     SYNC.versions[id]=meta.v; SYNC.lastJson[b]=json; changed=true;
   }
@@ -3900,7 +3908,7 @@ function syncReportFilterOptions(){
 function renderReportRows(){
   const {rows,vis}=RPT_CTX, list=rows.filter(rfMatch), active=!!(RF.q||RF.st||RF.pay||RF.recv||RF.diff);
   let rep='';
-  list.forEach(r=>{
+  list.slice(0,RPT_SHOW).forEach(r=>{
     const d=rowDiff(r), okR=rptStatus(r)===RPT_OK;
     rep+='<tr'+(r.status==='bad'?' class="warn"':r.status==='exchanged'?' class="exch"':'')+'><td class="center">'+esc(thaiDate(r.date))+'</td><td class="center"><span class="shop-tag">'+esc(r.branch||'-')+'</span></td><td class="center">'+esc(r.jst)+'</td>'
       +'<td class="num">'+fmtN(r.sale)+'</td>'
@@ -3911,6 +3919,7 @@ function renderReportRows(){
       +'<td class="st '+(okR?'st-ok':'st-no')+'">'+(r.status==='exchanged'?'↔ เปลี่ยนสินค้า':(okR?RPT_OK:RPT_NO))+'</td>'
       +'<td class="note">'+esc(noteText(r))+'</td><td>'+esc(r.online||'')+'</td><td>'+esc(r.shop||'')+'</td></tr>';
   });
+  if(list.length>RPT_SHOW) rep+='<tr class="rf-more"><td colspan="'+(18+(vis.length||1))+'" class="center">แสดง '+fmtInt(RPT_SHOW)+' จาก '+fmtInt(list.length)+' รายการ (ยอดรวมด้านล่างนับครบทุกรายการ) · <button type="button" class="linkbtn" data-more="1000">แสดงเพิ่มอีก 1,000</button> · <button type="button" class="linkbtn" data-more="all">แสดงทั้งหมด</button> <span class="muted">(ข้อมูลมากอาจช้า · ดาวน์โหลด Excel ได้ครบ)</span></td></tr>';
   if(list.length){
     const sl=list.filter(r=>r.status!=='bad'), bl=list.filter(r=>r.status==='bad');   // ยอดขาย/ส่วนลด/ค่าธรรมเนียม นับเฉพาะออเดอร์จริง (ไม่รวมเงินเข้าที่ไม่พบออเดอร์)
     const S=k=>sum(sl,r=>r[k]||0), nv=vis.length||1;
@@ -3921,11 +3930,13 @@ function renderReportRows(){
     if(bl.length) rep+='<tr class="rf-tot rf-bad"><td colspan="'+(12+nv)+'" style="text-align:left">ไม่รวมในยอดขายด้านบน: เงินเข้าที่ไม่พบคำสั่งซื้อใน JST '+bl.length+' รายการ</td><td class="num">'+fmt(sum(bl,r=>r.recv||0))+'</td><td colspan="5"></td></tr>';
   } else rep='<tr><td colspan="'+(18+(vis.length||1))+'" class="empty">'+(active?'ไม่พบรายการตามตัวกรอง':'ไม่มีรายการในช่วงเวลาที่เลือก')+'</td></tr>';
   document.getElementById('reportTbody').innerHTML=rep;
+  document.querySelectorAll('#reportTbody [data-more]').forEach(x=>x.onclick=()=>{ RPT_SHOW=x.dataset.more==='all'?1e9:RPT_SHOW+1000; renderReportRows(); });
   const m=document.getElementById('rf-meta');
   if(m) m.innerHTML=active?'แสดง <b>'+list.length+'</b> จาก '+rows.length+' รายการ · ยอดรวม <b>'+fmt(sum(list,r=>r.total||0))+'</b> · เงินเข้าจริง <b>'+fmt(sum(list,r=>r.recv||0))+'</b> · ยอดต่าง <b>'+fmt(sum(list,r=>rowDiff(r)))+'</b>':'ทั้งหมด '+rows.length+' รายการ';
   const clr=document.getElementById('rf-clear'); if(clr) clr.hidden=!active;
 }
-function setReportRows(rows,vis){ RPT_CTX={rows,vis}; syncReportFilterOptions(); renderReportRows(); }
+let RPT_SHOW=300; const fmtInt=n=>Number(n).toLocaleString('en-US');
+function setReportRows(rows,vis){ if(!RPT_CTX||RPT_CTX.rows.length!==rows.length) RPT_SHOW=300; RPT_CTX={rows,vis}; syncReportFilterOptions(); renderReportRows(); }
 (function(){
   const bar=document.getElementById('rptFilter'); if(!bar||!bar.addEventListener) return;
   const save=()=>{ try{ localStorage.setItem('rptFilter',JSON.stringify({...RF,q:''})); }catch(e){} };
@@ -4527,6 +4538,17 @@ summarize=(orig=>function(res){
   return {...S, byPay, rptSale:sum(live,r=>r.sale), disc:sum(live,r=>r.disc), ship:sum(live,r=>r.ship), fee:sum(live,r=>r.fee), badRecv:sum(bad,rowRecv), badCount:bad.length};
 })(summarize);
 summaryLines=(orig=>function(S){ const L=orig(S); if(S.badCount) L.push(['เงินเข้าที่ไม่พบคำสั่งซื้อใน JST ('+S.badCount+' รายการ · ไม่รวมในยอดขาย)',S.badRecv]); return L; })(summaryLines);
+
+// ===== ความเร็ว: วาดหน้าพนักงานเฉพาะตอนเปิดดู และรวมการวาดหน้าจอที่เกิดถี่ๆ (เช่น ข้อมูลร่วมกันอัปเดตหลายครั้งติดกัน)
+let STAFF_LAST=null, STAFF_DIRTY=false;
+renderStaff=(orig=>function(S){ STAFF_LAST=S; const tab=document.querySelector('.tab.active'); const on=isStaff()||(tab&&tab.dataset&&tab.dataset.tab==='staff');
+  if(!on){ STAFF_DIRTY=true; return; } STAFF_DIRTY=false; return orig(S); })(renderStaff);
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{ if(t.dataset.tab==='staff'&&STAFF_DIRTY){ try{ renderStaff(STAFF_LAST); }catch(e){} } }));
+render=(orig=>{ let last=0, timer=null, busy=false;
+  return function(){ const now=performance.now();
+    if(!busy&&now-last>300){ busy=true; try{ return orig(); }finally{ busy=false; last=performance.now(); } }
+    clearTimeout(timer); timer=setTimeout(()=>{ busy=true; try{ orig(); }finally{ busy=false; last=performance.now(); } },300); };
+})(render);
 
 
 /* ---------- Excel download (รายงานตรวจเงินเข้า) ---------- */
