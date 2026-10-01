@@ -1270,7 +1270,7 @@ document.getElementById('processBtn').onclick=async()=>{
     const batch={id:'B'+Date.now(), at:new Date().toISOString(), files:D.files, hasBank:!!D.bankRows, hasPlat:!!D.platRows, hasStmt:D.stmtCount>0, hasRefund:D.refunds.length>0};
     const oldPD=replaceAll?{}:{...((DATA[b]&&DATA[b].posDays)||{})};
     const m=mergeDataset(b,rec,{accName:D.bankInfo.accName||D.platInfo.accName||'', accNo:D.bankInfo.accNo||D.platInfo.accNo||'',
-      branchInfo:D.bankInfo.branch||D.sellers.join(', '), isSample:false, preload:false, importedAt:new Date().toISOString()},replaceAll,batch,D.credits,D.refunds,D.wallet,hasStore?null:{bank:D.bankRows||[],plat:D.platRows||[]});
+      branchInfo:D.bankInfo.branch||D.sellers.join(', '), isSample:false, preload:false, importedAt:new Date().toISOString()},replaceAll,batch,D.credits,D.refunds,D.wallet,hasStore?(rec.late&&(rec.late.bank.length||rec.late.plat.length)?rec.late:null):{bank:D.bankRows||[],plat:D.platRows||[]});
     if(D.posDays&&Object.keys(D.posDays).length&&DATA[b]){ Object.keys(D.posDays).forEach(k=>oldPD[k]=D.posDays[k]); DATA[b].posDays=oldPD; }
     saveData();
     const c=k=>rec.rows.filter(r=>r.status===k).length, parts=[];
@@ -1439,7 +1439,7 @@ function mergeDataset(b,rec,meta,replaceAll,batch,credits,refunds,wallet,late){
   const tagB=rows=>tagRows(rows,b).map(r=>({...r,batch:batch.id}));
   const newRows=tagB(rec.rows), newHidden=tagB(rec.hidden), newCredits=(credits||[]).map(c=>({...c,batch:batch.id})), newRefunds=(refunds||[]).map(c=>({...c,batch:batch.id})), newWallet=(wallet||[]).map(c=>({...c,batch:batch.id})), newBank=((late&&late.bank)||[]).map(c=>({...c,batch:batch.id})), newPlat=((late&&late.plat)||[]).map(c=>({...c,batch:batch.id}));
   const old=DATA[b];
-  if(!old||(replaceAll&&newRows.length)){ DATA[b]={...meta, rows:newRows, hidden:newHidden, credits:newCredits, refunds:newRefunds, wallet:newWallet, bankRaw:newBank, platRaw:newPlat, batches:[batch]}; return {replacedDays:0}; }
+  if(!old||(replaceAll&&newRows.length)){ DATA[b]={...meta, deletedBatches:old?[...new Set([...(old.deletedBatches||[]),...(old.batches||[]).map(x=>x.id)])]:[], rows:newRows, hidden:newHidden, credits:newCredits, refunds:newRefunds, wallet:newWallet, bankRaw:newBank, platRaw:newPlat, batches:[batch]}; return {replacedDays:0}; }
   const days=new Set(newRows.concat(newHidden).map(r=>r.date)), keep=r=>!days.has(r.date);
   const replacedDays=[...days].filter(d=>old.rows.some(r=>r.date===d)).length;
   const byKey=(a,c)=>sortKey(a).localeCompare(sortKey(c));
@@ -1583,10 +1583,10 @@ function applyLumps(rows, hidden, lumps){
 function applyLumpsBranch(b){
   const d=DATA[b]; if(!d) return {rows:[],info:{},exchanges:[],card:null};
   const c=BR_CACHE[b]; if(c&&c.v===DATA_V) return c.res;
-  const manual=LUMPS.filter(e=>e.branch===b), card=cardAutoMatch(b,d,manual);
+  const manual=LUMPS.filter(e=>e.branch===b), card=cardAutoMatch(b,{...d,rows:inferRowDates(d.rows)},manual);
   // ข้อมูลที่นำเข้าไว้ก่อน: จัดช่องทางใหม่ตามวิธีชำระเงิน (แม่มณี / โอนเข้าบัญชี) แม้แถวจะมีเลขคำสั่งซื้อออนไลน์
   const MM_RE=/แม่มณี|maemanee|mae manee/i;
-  const base=d.rows.map(r=>{
+  const base=inferRowDates(d.rows).map(r=>{
     if(r.status==='bad'||!r.method) return r;
     if(r.channel==='platform'&&Math.abs(rowRecv(r))>0.004) return r;           // จับคู่กับไฟล์แพลตฟอร์มไปแล้ว คงไว้
     const pay=MM_RE.test(r.method)?'maemanee':TRANSFER_RE.test(r.method)?'transfer':null;
@@ -1602,6 +1602,14 @@ function applyLumpsBranch(b){
 }
 // ยังไม่ได้นำเข้าไฟล์ขายของช่วงวันนี้ (บันทึกล่วงหน้า) → รอกระทบอัตโนมัติเมื่อนำเข้าไฟล์
 function lumpAwaiting(e){ const d=DATA[e.branch]; if(!d||!d.rows) return true; return !d.rows.some(r=>{ const y=ymdOf(r.date); return y>=e.from&&y<=e.to; }); }
+// ตรวจช่วงวันขาย: ต้องไม่หลังวันที่เงินเข้า/นำฝาก และไม่ยาวหรือย้อนหลังเกิน 62 วัน (กันพิมพ์ปีผิด เช่น 68 แทน 69 หรือสลับวัน/เดือน)
+function lumpRangeProblem(rg,recvYmd){
+  if(!rg) return ''; const [f,t]=rg, th=y=>thaiDate(ymdToDmy(y));
+  if(dayDiff(f,t)>62) return 'ช่วงวันขาย '+th(f)+' – '+th(t)+' ยาวเกิน 62 วัน ตรวจปีที่กรอก (เช่น 68 กับ 69)';
+  if(recvYmd){ if(t>recvYmd) return 'วันขาย '+th(t)+' อยู่หลังวันที่นำฝาก/เงินเข้า '+th(recvYmd)+' ตรวจวันและเดือนที่กรอก';
+    if(dayDiff(f,recvYmd)>62) return 'วันขาย '+th(f)+' ห่างจากวันที่นำฝาก/เงินเข้า '+th(recvYmd)+' เกิน 62 วัน ตรวจปีที่กรอก'; }
+  return '';
+}
 function lumpInfo(e){ return (e&&applyLumpsBranch(e.branch).info[e.id])||{}; }
 const normOrder=s=>clean(s).replace(/^JST\s*/i,'').replace(/^#/,'').toUpperCase();
 function findOrderIndex(rows,key){
@@ -1638,7 +1646,7 @@ function renderLumps(){
         const daysTxt=kind==='cash'&&inf.days?Object.keys(inf.days).sort((a,c)=>ymdOf(a)-ymdOf(c)).map(d=>{ const g=inf.days[d]; return '<span class="day-chip"><b>'+esc(thaiDate(d))+'</b> '+g.n+' รายการ · ขาย '+fmt(g.sale)+' → ฝาก '+fmt(g.alloc)+'</span>'; }).join(''):'';
         return '<tr>'+brTd(e)+'<td>'+range+'</td><td class="num">'+fmt(e.full)+'</td>'
           +(kind==='card'?'<td class="num">'+fmt(e.fee)+'</td><td class="num">'+fmt(r2(e.full-e.fee))+'</td>':'')
-          +'<td class="center">'+esc(e.recvDate||'-')+'</td><td>'+res+(e.memo?'<div class="muted" style="margin-top:4px;white-space:normal">'+esc(e.memo)+'</div>':'')+(e.ocr&&e.ocr.amount?'<div class="muted" style="margin-top:4px;white-space:normal">อ่านจากใบเสร็จ '+fmt(e.ocr.amount)+(e.ocr.amount!==e.full?' (บันทึก '+fmt(e.full)+')':'')+(e.ocr.bank?' · '+esc(e.ocr.bank):'')+(e.ocr.account?' '+esc(e.ocr.account):'')+(e.ocr.account_name?' · '+esc(e.ocr.account_name):'')+'</div>':'')+'</td>'
+          +'<td class="center">'+esc(e.recvDate||'-')+'</td><td>'+res+(()=>{ const w=lumpRangeProblem([e.from,e.to],ymdOf(e.recvDate)); return w?'<div class="neg" style="margin-top:4px;white-space:normal">⚠ '+esc(w)+' — ลบแล้วบันทึกใหม่</div>':''; })()+(e.memo?'<div class="muted" style="margin-top:4px;white-space:normal">'+esc(e.memo)+'</div>':'')+(e.ocr&&e.ocr.amount?'<div class="muted" style="margin-top:4px;white-space:normal">อ่านจากใบเสร็จ '+fmt(e.ocr.amount)+(e.ocr.amount!==e.full?' (บันทึก '+fmt(e.full)+')':'')+(e.ocr.bank?' · '+esc(e.ocr.bank):'')+(e.ocr.account?' '+esc(e.ocr.account):'')+(e.ocr.account_name?' · '+esc(e.ocr.account_name):'')+'</div>':'')+'</td>'
           +(kind==='cash'?'<td class="center">'+(e.receipt?'<button type="button" class="linkbtn rcpt-btn" data-id="'+e.id+'" data-n="'+(e.receipts||1)+'">🧾 ดูใบเสร็จ'+((e.receipts||1)>1?' ('+e.receipts+' ใบ)':'')+'</button>':'<span class="muted">-</span>')+'</td>':'')
           +'<td class="center"><button type="button" class="lump-del" data-id="'+e.id+'" aria-label="ลบรายการ">×</button></td></tr>'
           +(daysTxt?'<tr class="days-row"><td colspan="'+(multi?7:6)+'"><span class="muted">เฉลี่ยรายวัน:</span> '+daysTxt+'</td></tr>':'');
@@ -1718,6 +1726,7 @@ function lumpTarget(kind){
     if(!rg) return lumpMsg('card','กรุณาเลือกวันที่ขาย',true);
     if(full==null) return lumpMsg('card','กรุณากรอกยอดเต็ม',true);
     if(fee!=null&&net!=null&&Math.abs(full-fee-net)>0.005) return lumpMsg('card','ยอดเต็ม − ค่าธรรมเนียม ไม่เท่ากับยอดหลังหักค่าธรรมเนียม',true);
+    { const bad=lumpRangeProblem(rg,rd?isoToYmd(rd):null); if(bad) return lumpMsg('card',bad,true); }
     if(overlaps('card',rg[0],rg[1],br)) return lumpMsg('card','ช่วงวันที่นี้มีรายการบัตรเครดิตของสาขา'+br+'อยู่แล้ว ลบรายการเดิมก่อน',true);
     const e={id:'L'+Date.now(),kind:'card',branch:br,from:rg[0],to:rg[1],full:r2(full),fee:r2(Math.abs(fee||0)),recvDate:rd?isoToDmy(rd):ymdToDmy(rg[1])};
     LUMPS.push(e); saveLumps(); ['card-full','card-fee','card-net'].forEach(id=>document.getElementById(id).value='');
@@ -1730,6 +1739,7 @@ function lumpTarget(kind){
     if(!rg) return lumpMsg('cash','กรุณาเลือกวันที่ขาย',true);
     if(amt==null) return lumpMsg('cash','กรุณากรอกยอดนำฝาก',true);
     if(!dd) return lumpMsg('cash','กรุณาเลือกวันที่นำฝาก',true);
+    { const bad=lumpRangeProblem(rg,isoToYmd(dd)); if(bad) return lumpMsg('cash',bad,true); }
     if(overlaps('cash',rg[0],rg[1],br)) return lumpMsg('cash','ช่วงวันที่นี้มีรายการเงินสดของสาขา'+br+'อยู่แล้ว ลบรายการเดิมก่อน',true);
     const e={id:'L'+Date.now(),kind:'cash',branch:br,from:rg[0],to:rg[1],full:r2(amt),fee:0,recvDate:isoToDmy(dd),memo:v('cash-note').trim(),ocr:CASH_OCR};
     const files=CASH_FILES.slice(), keys=rcptKeys(e.id,files.length); let warn='', saved=0;
@@ -2532,6 +2542,7 @@ function cleanupBranch(b){
 function deleteBatch(b,id){
   const d=DATA[b]; if(!d||!canSeeBranch(b)||isStaff()) return;
   const keep=r=>(r.batch||'legacy')!==id;
+  d.deletedBatches=[...new Set([...(d.deletedBatches||[]),id])];
   d.rows=d.rows.filter(keep); d.hidden=(d.hidden||[]).filter(keep); d.credits=(d.credits||[]).filter(keep); d.refunds=(d.refunds||[]).filter(keep); d.wallet=(d.wallet||[]).filter(keep); d.bankRaw=(d.bankRaw||[]).filter(keep); d.platRaw=(d.platRaw||[]).filter(keep); d.preload=false;
   cleanupBranch(b); saveData();
 }
@@ -2539,6 +2550,7 @@ function deleteRange(b,from,to){
   const d=DATA[b]; if(!d||!canSeeBranch(b)||isStaff()) return 0;
   const inR=r=>{ const y=ymdOf(r.date); return y&&y>=from&&y<=to; };
   const n=d.rows.filter(inR).length+(d.credits||[]).filter(inR).length+(d.refunds||[]).filter(inR).length+(d.wallet||[]).filter(inR).length+(d.bankRaw||[]).filter(inR).length+(d.platRaw||[]).filter(inR).length;
+  d.deletedRanges=(d.deletedRanges||[]).concat([{from,to,at:new Date().toISOString()}]);
   d.rows=d.rows.filter(r=>!inR(r)); d.hidden=(d.hidden||[]).filter(r=>!inR(r)); d.credits=(d.credits||[]).filter(r=>!inR(r)); d.refunds=(d.refunds||[]).filter(r=>!inR(r)); d.wallet=(d.wallet||[]).filter(r=>!inR(r)); d.bankRaw=(d.bankRaw||[]).filter(r=>!inR(r)); d.platRaw=(d.platRaw||[]).filter(r=>!inR(r)); d.preload=false;
   if(d.posDays) Object.keys(d.posDays).forEach(k=>{ const y=ymdOf(k); if(y&&y>=from&&y<=to) delete d.posDays[k]; });
   cleanupBranch(b); saveData(); return n;
@@ -2999,7 +3011,10 @@ function acctNameFromText(t){
     const m=/(?:ชื่อบัญชี|ชื่อ\s*-?\s*สกุล|ชื่อผู้รับ|account\s*name|acc(?:ount)?\.?\s*name|ผู้รับ(?:เงิน)?)\s*[:：]?\s*(.{3,60})$/i.exec(ln);
     let name=m?m[1]:(TITLE.test(ln)?ln.slice(ln.search(TITLE)):''); if(!name&&/ชื่อบัญชี|account\s*name/i.test(prev)) name=ln;
     name=name.replace(/[|_<>\[\]{}]+/g,' ').replace(/\s{2,}/g,' ').replace(/\s*(?:บัญชี|เลขที่|a\/c|\d{3}[-\dxX]{5,}).*$/i,'').trim();
+    name=name.replace(/\s*[\/|].*$/,'').trim();
     if(!name||name.length<4||!/[ก-๙A-Za-z]{2}/.test(name)||/^\d/.test(name)) return;
+    if(/ประเภท|transaction|type|รายการ|เลขที่|วันที่|date|time|เวลา|จำนวน|amount|ยอด|ช่องทาง|channel|หมายเหตุ|remark/i.test(name)) return;
+    if(!TITLE.test(name)&&name.split(/\s+/).length<2) return;
     let sc=0; if(/ชื่อบัญชี|account\s*name|ผู้รับ|ไปยัง|เข้าบัญชี|ปลายทาง|(?:^|\s)to\b/i.test(ln+' '+prev)) sc+=3; if(TITLE.test(name)) sc+=2; if(/ผู้ฝาก|ผู้โอน|depositor|from|จาก|ลงชื่อ|signature|พนักงาน|teller/i.test(ln+' '+prev)) sc-=4; if(/ธนาคาร|bank|สาขา|branch|สลิป|ใบนำฝาก|ยอด|จำนวน/i.test(name)) sc-=3;
     cands.push({name:name.slice(0,60),sc,i}); });
   if(!cands.length) return null; cands.sort((a,b)=>b.sc-a.sc||a.i-b.i); return cands[0].sc>0?cands[0].name:null;
@@ -3055,7 +3070,7 @@ function saleRangeFromText(t,depIso){
   const depY=depIso?+depIso.slice(0,4):new Date().getFullYear(), depM=depIso?+depIso.slice(5,7):0;
   const mon=k=>{ k=String(k||'').replace(/\.$/,''); return TH_MON[k]||TH_MON[k.replace(/\./g,'')]||TH_MON[k.slice(0,3).toUpperCase()]||0; };
   const yr=y=>y?ocrYear(y):depY, iso=(y,m,d)=>(m>=1&&m<=12&&d>=1&&d<=31)?y+'-'+pad(m)+'-'+pad(d):'';
-  const fix=(a,b)=>{ if(!a||!b) return null; if(depIso&&a>depIso) return null; if(b>depIso&&depIso) b=depIso; return a<=b?[a,b]:[b,a]; };
+  const fix=(a,b)=>{ if(!a||!b) return null; if(depIso&&a>depIso) return null; if(depIso&&(new Date(depIso)-new Date(a))/864e5>62) return null; if((new Date(b)-new Date(a))/864e5>62) return null; if(b>depIso&&depIso) b=depIso; return a<=b?[a,b]:[b,a]; };
   const depD=depIso?+depIso.slice(8,10):new Date().getDate(), dm=depM||(new Date().getMonth()+1);
   t=String(t||'').replace(/[—–−]/g,'-');
   // "ยอดขายวันที่ 28/07/2569 - 02/08/2569" หรือ "28/7/69 - 2/8/69"
@@ -3405,7 +3420,7 @@ function matchLate(rows,d,b){
       const total=r2(sale+disc+ship+fee);
       out[i]={...r, sale, disc, ship, fee, feeC, total, recv:p.amount, amount:p.amount, recvDate:p.date, bank:p.platform, channel:'platform', pay:PLATFORM_KEY[p.platform]||r.pay,
         status:Math.abs(total-p.amount)<0.005?'ok':'pending', ref:p.platform+' '+p.orderNo, note:[r.note,...(p.types||[]),p.refund?'มีการคืนสินค้า':''].filter(Boolean).join(', ')}; }
-    else if(inStoreRange(p.date)){ const bd=p.hasBreakdown;
+    else if(p.orderYmd?(lo!=null&&p.orderYmd>=lo&&p.orderYmd<=hi):inStoreRange(p.date)){ const bd=p.hasBreakdown;
       out.push({jst:'-',orderAmount:0,disc:bd?p.disc:0,ship:bd?p.ship:0,fee:bd?p.fee:0,feeC:bd?p.feeC:null,sale:bd?p.gross:p.amount,total:p.amount,date:p.date,time:'-',orderNo:p.orderNo,online:p.orderNo,shop:p.platform,
         name:p.buyer||'-',bank:p.platform,pay:PLATFORM_KEY[p.platform]||'website',amount:p.amount,recv:p.amount,recvDate:p.date,status:'bad',channel:'platform',branch:b,ref:p.platform+' '+p.orderNo,
         note:['ไม่พบคำสั่งซื้อใน JST',...(p.types||[]),p.refund?'มีการคืนสินค้า':''].filter(Boolean).join(', ')}); }
@@ -3625,7 +3640,7 @@ function linkPrevPos(rows){
    shared/lumps · shared/deposits · shared/users : รายการที่บันทึกเอง / มัดจำ / ผู้ใช้และสิทธิ์
    receipts/<id>        : รูปใบเสร็จนำฝาก (ย่อแล้ว)
    เบราว์เซอร์แต่ละเครื่องเก็บสำเนาไว้เป็นแคช */
-const SYNC={reason:'', localSnap:null, pendingLocal:{}, db:null, status:'local', applying:false, lastJson:{}, meta:{}, versions:{}, small:{}, queue:Promise.resolve(), pending:0, lastBy:'', lastAt:''};
+const SYNC={own:new Set(), smallBase:{}, reason:'', localSnap:null, pendingLocal:{}, db:null, status:'local', applying:false, lastJson:{}, meta:{}, versions:{}, small:{}, queue:Promise.resolve(), pending:0, lastBy:'', lastAt:''};
 const BKEY=b=>'b'+(BRANCHES.indexOf(b)+1), BFROM=k=>BRANCHES[+String(k).slice(1)-1];
 const CHUNK=60000;
 function serializeBranch(b){
@@ -3651,32 +3666,51 @@ function enqueue(fn){
     .finally(()=>{ SYNC.pending--; setSyncBadge(); });
   return SYNC.queue;
 }
-async function pushBranch(b,json){
+async function pushBranch(b,json,base){ if(base===undefined) base=SYNC.versions[BKEY(b)];
   const db=SYNC.db, id=BKEY(b), by=currentUser().name, at=new Date().toISOString();
   const old=SYNC.meta[id];
   if(json===null){ await db.doc('branches/'+id).set({deleted:true,at,by}); }
   else if(json==='PRELOAD'){ await db.doc('branches/'+id).set({preload:true,at,by}); }
   else{
+    // มีคนอื่นบันทึกสาขานี้หลังจากที่เครื่องนี้โหลดมา → รวมข้อมูลก่อนบันทึก (ไม่เขียนทับของคนอื่น)
+    try{ const cur=await db.doc('branches/'+id).get(); const m=cur&&cur.exists?cur.data():null;
+      if(m&&m.v&&m.v!==base&&!SYNC.own.has(m.v)){
+        const ps=await Promise.all(Array.from({length:m.n},(_,i)=>db.doc('chunks/'+id+'-'+m.v+'-'+i).get()));
+        if(ps.every(x=>x&&x.exists)){ const remote=JSON.parse(ps.map(x=>x.data().p).join('')); const merged=mergeBranchData(remote,JSON.parse(json));
+          json=JSON.stringify(merged); DATA[b]={...merged, rows:tagRows(merged.rows,b), hidden:tagRows(merged.hidden||[],b)}; SYNC.lastJson[b]=json;
+          SYNC.applying=true; try{ saveData(); }finally{ SYNC.applying=false; } setTimeout(()=>{ try{ render(); }catch(e){} },0); }
+        SYNC.meta[id]={v:m.v,n:m.n}; } }catch(e){ console.warn('merge',e); }
+    SYNC.oldW=SYNC.meta[id];
     const v=Date.now().toString(36)+Math.random().toString(36).slice(2,5), parts=[];
     for(let i=0;i<json.length;i+=CHUNK) parts.push(json.slice(i,i+CHUNK));
     for(let i=0;i<parts.length;i++) await db.doc('chunks/'+id+'-'+v+'-'+i).set({p:parts[i]});
-    SYNC.versions[id]=v; SYNC.meta[id]={v,n:parts.length};
+    SYNC.versions[id]=v; SYNC.own.add(v); SYNC.meta[id]={v,n:parts.length};
     await db.doc('branches/'+id).set({v,n:parts.length,at,by});
   }
   SYNC.lastBy=by; SYNC.lastAt=at;
-  if(old&&old.v&&old.n) for(let i=0;i<old.n;i++) db.doc('chunks/'+id+'-'+old.v+'-'+i).delete().catch(()=>{});
+  const ow=(json&&json!=='PRELOAD')?SYNC.oldW:old; SYNC.oldW=null;
+  if(ow&&ow.v&&ow.n&&ow.v!==SYNC.versions[id]) setTimeout(()=>{ for(let i=0;i<ow.n;i++) db.doc('chunks/'+id+'-'+ow.v+'-'+i).delete().catch(()=>{}); },15000);
 }
 // เรียกหลังบันทึกข้อมูลในเครื่อง: ส่งเฉพาะสาขาที่เปลี่ยนจริงไปยังข้อมูลร่วมกัน
 function syncBranches(){
   if(!SYNC.db||SYNC.applying||SYNC.status==='readonly') return;
   const keys=new Set([...Object.keys(DATA),...Object.keys(SYNC.lastJson)]);
   keys.forEach(b=>{ if(!BRANCHES.includes(b)) return; const j=serializeBranch(b);
-    if(j===SYNC.lastJson[b]) return; SYNC.lastJson[b]=j; enqueue(()=>pushBranch(b,j)); });
+    if(j===SYNC.lastJson[b]) return; SYNC.lastJson[b]=j; const base=SYNC.versions[BKEY(b)]; enqueue(()=>pushBranch(b,j,base)); });
 }
 function syncSmall(name,list){
   if(!SYNC.db||SYNC.applying||SYNC.status==='readonly') return;
   const j=JSON.stringify(list); if(j===SYNC.small[name]) return; SYNC.small[name]=j;
-  enqueue(()=>SYNC.db.doc('shared/'+name).set({list:JSON.parse(j), at:new Date().toISOString(), by:currentUser().name}));
+  const prevIds=new Set((SYNC.smallBase[name]||[]).map(x=>x&&x.id).filter(Boolean));
+  enqueue(async()=>{
+    let list=JSON.parse(j);
+    try{ const cur=await SYNC.db.doc('shared/'+name).get(); const rl=cur&&cur.exists&&Array.isArray(cur.data().list)?cur.data().list:[];
+      const mine=new Set(list.map(x=>x&&x.id)), removed=new Set([...prevIds].filter(i=>!mine.has(i)));
+      const extra=rl.filter(x=>x&&x.id&&!mine.has(x.id)&&!removed.has(x.id));   // รายการที่คนอื่นเพิ่มระหว่างนี้
+      if(extra.length){ list=list.concat(extra); SYNC.applying=true; try{ if(name==='lumps'){ LUMPS=list; saveLumps(); } else if(name==='deposits'){ DEPOSITS=list; saveDeposits(); } else if(name==='users'){ USERS=list; saveUsers(); } }finally{ SYNC.applying=false; } setTimeout(()=>{ try{ render(); }catch(e){} },0); }
+    }catch(e){}
+    SYNC.small[name]=JSON.stringify(list); SYNC.smallBase[name]=list;
+    await SYNC.db.doc('shared/'+name).set({list, at:new Date().toISOString(), by:currentUser().name}); });
 }
 async function applyRemoteBranch(id,meta){
   const b=BFROM(id); if(!b) return;
@@ -3700,7 +3734,7 @@ async function applyRemoteBranch(id,meta){
 }
 function applyRemoteSmall(name,data){
   if(!data||!Array.isArray(data.list)) return;
-  const j=JSON.stringify(data.list); if(j===SYNC.small[name]) return; SYNC.small[name]=j;
+  SYNC.smallBase[name]=data.list; const j=JSON.stringify(data.list); if(j===SYNC.small[name]) return; SYNC.small[name]=j;
   SYNC.applying=true;
   try{
     if(name==='lumps'){ LUMPS=data.list; saveLumps(); }
@@ -3748,7 +3782,7 @@ RCPT.get=async function(k){ const v=await RCPT_LOCAL.get(k).catch(()=>null); if(
 RCPT.del=function(k){ RCPT_LOCAL.del(k); if(SYNC.db) SYNC.db.doc('receipts/'+k).delete().catch(()=>{}); return Promise.resolve(); };
 
 // ข้อมูลที่เคยนำเข้าไว้ในเครื่องนี้ แต่ไม่อยู่ในข้อมูลร่วมกัน (เช่น นำเข้าตอนที่ยังไม่ได้เชื่อมต่อ) → เสนอให้ส่งขึ้น
-function checkLocalOnly(b){
+function checkLocalOnly(b){ return;   // ยกเลิกการถามว่าจะใช้ข้อมูลในเครื่องแทนข้อมูลร่วมกัน (ทำให้ข้อมูลของคนอื่นหาย) — ระบบรวมข้อมูลให้อัตโนมัติแทน
   const loc=SYNC.localSnap&&SYNC.localSnap[b]; if(!loc||loc.preload||SYNC.pendingLocal[b]===false) return;
   const remote=DATA[b], rIds=new Set(((remote&&remote.batches)||[]).map(x=>x.id));
   const miss=(loc.batches||[]).filter(x=>!rIds.has(x.id)&&loc.rows.some(r=>r.batch===x.id));
@@ -3769,6 +3803,33 @@ function renderSyncBanner(){
   el.querySelectorAll('button[data-push]').forEach(x=>x.onclick=()=>armBtn(x,'',()=>{ const b=x.dataset.push, p=SYNC.pendingLocal[b]; if(!p) return;
     DATA[b]=p.data; SYNC.pendingLocal[b]=false; saveData(); setStatus('ส่งข้อมูลสาขา'+b+'จากเครื่องนี้ขึ้นข้อมูลร่วมกันแล้ว ทุกคนจะเห็นข้อมูลชุดนี้'); render(); renderSyncBanner(); }));
   el.querySelectorAll('button[data-skip]').forEach(x=>x.onclick=()=>{ SYNC.pendingLocal[x.dataset.skip]=false; renderSyncBanner(); });
+}
+
+// รวมข้อมูลสาขา 2 ชุด (ข้อมูลร่วมกันล่าสุด + การเปลี่ยนแปลงจากเครื่องนี้) ตามรอบการนำเข้า (batch)
+function mergeBranchData(remote,local){
+  const R=JSON.parse(JSON.stringify(remote||{})); const L=local||{};
+  const tomb=new Set([...(R.deletedBatches||[]),...(L.deletedBatches||[])]);
+  const ARR=['rows','hidden','credits','refunds','wallet','bankRaw','platRaw'];
+  ARR.forEach(k=>{ R[k]=(R[k]||[]).filter(x=>!tomb.has(x.batch)); });
+  // ช่วงวันที่ที่เครื่องนี้ลบ
+  const rk=x=>x.from+'-'+x.to+'-'+(x.at||''), rset=new Set((R.deletedRanges||[]).map(rk));
+  (L.deletedRanges||[]).filter(x=>!rset.has(rk(x))).forEach(x=>{ const inR=r=>{ const y=ymdOf(r.date); return y&&y>=x.from&&y<=x.to&&!(L.batches||[]).some(b2=>b2.id===r.batch&&(b2.at||'')>(x.at||'')); };
+    ARR.forEach(k=>{ R[k]=R[k].filter(r=>!inR(r)); }); });
+  const rIds=new Set((R.batches||[]).map(x=>x.id));
+  const localOnly=(L.batches||[]).filter(x=>!rIds.has(x.id)&&!tomb.has(x.id));
+  localOnly.forEach(bt=>{
+    const of=k=>(L[k]||[]).filter(x=>x.batch===bt.id);
+    const nr=of('rows'), nh=of('hidden'), days=new Set(nr.concat(nh).map(r=>r.date));
+    R.rows=R.rows.filter(r=>!days.has(r.date)).concat(nr); R.hidden=R.hidden.filter(r=>!days.has(r.date)).concat(nh);
+    ['credits','refunds','wallet','bankRaw','platRaw'].forEach(k=>{ const add=of(k), key=x=>JSON.stringify([x.date,x.time,x.amount,x.acct||'',x.desc||'',x.orderNo||'',x.pos||'',x.ref||'']); const ks=new Set(add.map(key)); R[k]=R[k].filter(x=>!ks.has(key(x))).concat(add); });
+  });
+  R.batches=(R.batches||[]).filter(x=>!tomb.has(x.id)).concat(localOnly);
+  R.deletedBatches=[...tomb]; R.deletedRanges=[...(R.deletedRanges||[]),...(L.deletedRanges||[]).filter(x=>!rset.has(rk(x)))];
+  ['accName','accNo','branchInfo'].forEach(k=>{ if(!R[k]&&L[k]) R[k]=L[k]; });
+  R.preload=false;
+  const byKey=(a,c)=>sortKey(a).localeCompare(sortKey(c));
+  R.rows=[...R.rows.filter(r=>r.status!=='bad').sort(byKey),...R.rows.filter(r=>r.status==='bad').sort(byKey)];
+  return R;
 }
 
 /* ---------- ป้ายแท็ก "แลกแต้ม": สรุปมูลค่าที่ลูกค้าใช้แต้มแลก ---------- */
@@ -3851,11 +3912,13 @@ function renderReportRows(){
       +'<td class="note">'+esc(noteText(r))+'</td><td>'+esc(r.online||'')+'</td><td>'+esc(r.shop||'')+'</td></tr>';
   });
   if(list.length){
-    const S=k=>sum(list,r=>r[k]||0), nv=vis.length||1;
+    const sl=list.filter(r=>r.status!=='bad'), bl=list.filter(r=>r.status==='bad');   // ยอดขาย/ส่วนลด/ค่าธรรมเนียม นับเฉพาะออเดอร์จริง (ไม่รวมเงินเข้าที่ไม่พบออเดอร์)
+    const S=k=>sum(sl,r=>r[k]||0), nv=vis.length||1;
     rep+='<tr class="rf-tot"><td colspan="3">รวม '+list.length+' รายการ'+(active?' (ตามตัวกรอง)':'')+'</td><td class="num">'+fmt(S('sale'))+'</td>'
-      +(vis.length?vis.map(([k])=>'<td class="num">'+fmt(sum(list.filter(r=>r.pay===k),r=>r.sale||0))+'</td>').join(''):'<td></td>')
-      +'<td class="num">'+fmt(S('disc'))+'</td><td class="num">'+fmt(S('ship'))+'</td>'+FEE_CATS.map(([k])=>'<td class="num">'+fmt(sum(list,r=>rowFeeC(r)[k]||0))+'</td>').join('')+'<td class="num">'+fmt(S('total'))+'</td><td></td>'
+      +(vis.length?vis.map(([k])=>'<td class="num">'+fmt(sum(sl.filter(r=>r.pay===k),r=>r.sale||0))+'</td>').join(''):'<td></td>')
+      +'<td class="num">'+fmt(S('disc'))+'</td><td class="num">'+fmt(S('ship'))+'</td>'+FEE_CATS.map(([k])=>'<td class="num">'+fmt(sum(sl,r=>rowFeeC(r)[k]||0))+'</td>').join('')+'<td class="num">'+fmt(S('total'))+'</td><td></td>'
       +'<td class="num">'+fmt(sum(list,r=>r.recv||0))+'</td><td class="num">'+fmt(sum(list,r=>rowDiff(r)))+'</td><td colspan="4"></td></tr>';
+    if(bl.length) rep+='<tr class="rf-tot rf-bad"><td colspan="'+(12+nv)+'" style="text-align:left">ไม่รวมในยอดขายด้านบน: เงินเข้าที่ไม่พบคำสั่งซื้อใน JST '+bl.length+' รายการ</td><td class="num">'+fmt(sum(bl,r=>r.recv||0))+'</td><td colspan="5"></td></tr>';
   } else rep='<tr><td colspan="'+(18+(vis.length||1))+'" class="empty">'+(active?'ไม่พบรายการตามตัวกรอง':'ไม่มีรายการในช่วงเวลาที่เลือก')+'</td></tr>';
   document.getElementById('reportTbody').innerHTML=rep;
   const m=document.getElementById('rf-meta');
@@ -4427,6 +4490,43 @@ parseStatementAOA=(orig=>function(aoa){
   // ไม่มีหัวตารางที่รู้จัก → อ่านแบบข้อความทีละแถว
   const lines=(aoa||[]).map(r=>(r||[]).map(v=>v instanceof Date?pad(v.getDate())+'/'+pad(v.getMonth()+1)+'/'+v.getFullYear():typeof v==='number'?(Number.isInteger(v)?String(v):v.toFixed(2)):clean(v)).filter(x=>x!=='').join(' '));
   const g=parseStatementGeneric(lines); return g.rows.length?{rows:g.rows,accNo:g.accNo,bankHint:g.bankHint}:a; })(parseStatementAOA);
+
+// ออเดอร์ที่ไม่มีวันที่ (ไฟล์คำสั่งซื้อไม่มีคอลัมน์วันที่ หรืออ่านไม่ได้): ประมาณวันที่จากเลข POS ที่ใกล้ที่สุดซึ่งมีวันที่ (เลข POS เรียงตามเวลาที่เปิดบิล)
+function inferRowDates(rows){
+  const posNum=r=>{ const v=String(r.jst||'').replace(/\D/g,''); return v.length>=5?+v:null; };
+  const known=[]; rows.forEach(r=>{ const n=posNum(r), y=ymdOf(r.date); if(n!=null&&y) known.push([n,r.date,y]); });
+  if(!known.length||!rows.some(r=>!ymdOf(r.date))) return rows;
+  known.sort((a,b)=>a[0]-b[0]);
+  return rows.map(r=>{ if(ymdOf(r.date)||r.status==='bad') return r; const n=posNum(r); if(n==null) return r;
+    let lo=0, hi=known.length-1, best=null; while(lo<=hi){ const m=(lo+hi)>>1; if(known[m][0]<=n){ best=m; lo=m+1; } else hi=m-1; }
+    const a=best!=null?known[best]:null, b=best!=null?known[best+1]:known[0];
+    // อยู่ระหว่างสองบิลที่วันเดียวกัน = วันนั้นแน่นอน; ไม่เช่นนั้นใช้บิลก่อนหน้า (ห่างไม่เกิน 300 เลข)
+    let pick=null; if(a&&b&&a[2]===b[2]) pick=a; else if(a&&n-a[0]<=300) pick=a; else if(b&&b[0]-n<=300) pick=b;
+    if(!pick) return r;
+    return {...r, date:pick[1], dateGuess:true, note:[r.note,'วันที่ประมาณจากเลข POS ใกล้เคียง (ไฟล์คำสั่งซื้อไม่มีวันที่)'].filter(Boolean).join(', ')}; });
+}
+
+// ยอดจากไฟล์แพลตฟอร์ม/QR ที่เป็นคำสั่งซื้อนอกช่วงวันที่ของไฟล์ร้านค้า (เช่น ไฟล์รายรับ ส.ค. แต่ไฟล์ JST เป็น ก.ย.)
+// ไม่ใช่ "ไม่พบคำสั่งซื้อ" — เก็บไว้รอจับคู่เมื่อนำเข้าไฟล์ร้านค้าของช่วงนั้น (ไม่นับเป็นยอดผิดปกติ)
+reconcileAll=(orig=>function(bankRows,platRows,storeRows){
+  storeRows=storeRows||[]; const ys=storeRows.map(s=>s.dt&&s.dt.ymd).filter(Boolean);
+  if(!ys.length) return orig(bankRows,platRows,storeRows);
+  const lo=Math.min(...ys), hi=Math.max(...ys);
+  const onl=new Set(), txn=new Set(); storeRows.forEach(s=>{ if(s.online){ onl.add(String(s.online)); onl.add(String(s.online).replace(/^#/,'')); } if(s.txn) txn.add(String(s.txn)); });
+  const late={bank:[],plat:[]};
+  const pIn=(platRows||[]).filter(p=>{ const hit=(p.keys||[p.orderNo]).some(k=>onl.has(String(k))||onl.has(String(k).replace(/^#/,'')));
+    if(hit) return true; const y=p.orderYmd||ymdOf(p.date); if(y&&(y<lo||y>hi)){ late.plat.push(p); return false; } return true; });
+  const bIn=bankRows?(bankRows).filter(b=>{ if(txn.has(String(b.orderNo))) return true; const y=ymdOf(b.date); if(y&&(y<lo||y>hi)){ late.bank.push(b); return false; } return true; }):bankRows;
+  const res=orig(bIn,platRows?pIn:platRows,storeRows); res.late=late; return res;
+})(reconcileAll);
+
+// สรุปยอด: ยอดขาย / ช่องทาง / ส่วนลด / ค่าขนส่ง / ค่าธรรมเนียม นับเฉพาะออเดอร์จริง — เงินเข้าที่ไม่พบคำสั่งซื้อใน JST แยกแสดงต่างหาก
+summarize=(orig=>function(res){
+  const S=orig(res), live=S.rows.filter(r=>r.status!=='bad'), bad=S.rows.filter(r=>r.status==='bad');
+  const byPay={}; PAY_COLS.forEach(([k])=>byPay[k]=0); live.forEach(r=>{ if(r.pay) byPay[r.pay]=(byPay[r.pay]||0)+r.sale; });
+  return {...S, byPay, rptSale:sum(live,r=>r.sale), disc:sum(live,r=>r.disc), ship:sum(live,r=>r.ship), fee:sum(live,r=>r.fee), badRecv:sum(bad,rowRecv), badCount:bad.length};
+})(summarize);
+summaryLines=(orig=>function(S){ const L=orig(S); if(S.badCount) L.push(['เงินเข้าที่ไม่พบคำสั่งซื้อใน JST ('+S.badCount+' รายการ · ไม่รวมในยอดขาย)',S.badRecv]); return L; })(summaryLines);
 
 
 /* ---------- Excel download (รายงานตรวจเงินเข้า) ---------- */
