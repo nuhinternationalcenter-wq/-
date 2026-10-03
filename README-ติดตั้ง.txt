@@ -5,14 +5,14 @@
 
 วิธีที่ 1: ผ่านหน้าเว็บ Cloudflare (ไม่ต้องติดตั้งโปรแกรม)
 1) เข้า dash.cloudflare.com > Workers & Pages > Create > Start with Hello World
-   ตั้งชื่อ reconcile > Deploy
+   ตั้งชื่อ worker > Deploy
 2) กด Edit code > ลบโค้ดเดิมทั้งหมด > เปิด worker.js ด้วย Notepad กด Ctrl+A, Ctrl+C แล้ววาง > Deploy
 3) กลับไปหน้า Worker > Settings > Bindings > Add > D1 database
    Variable name: DB   ·   D1 database: reconcile-db  > Deploy
 4) Settings > Variables and Secrets > Add > Type: Secret
    Variable name: TEAM_CODE   ·   Value: รหัสทีมที่ต้องการ  > Deploy
    (ไม่ตั้งก็ได้ แต่ใครมีลิงก์จะเห็นข้อมูลลูกค้าและยอดเงินทั้งหมด)
-5) เปิดลิงก์ https://reconcile.<ชื่อบัญชี>.workers.dev แล้วกรอกรหัสทีม 1 ครั้ง
+5) เปิดลิงก์ https://worker.<ชื่อบัญชี>.workers.dev แล้วกรอกรหัสทีม 1 ครั้ง
 
 วิธีที่ 2: ใช้ Wrangler (ถ้ามี Node.js)
   npx wrangler login
